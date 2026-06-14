@@ -74,17 +74,46 @@ require_env("REFRESH_TOKEN", REFRESH_TOKEN)
 # ----------------------------
 
 # ---------- Helpers ----------
-def safe_wikipedia_page(max_attempts=12):
-    for _ in range(max_attempts):
+def safe_wikipedia_page(max_attempts=5):
+    """
+    Fetch a random Wikipedia page with robust error handling and exponential backoff.
+    """
+    for attempt in range(max_attempts):
         try:
+            # Get a random page
             title = wikipedia.random(1)
-            page = wikipedia.page(title)
-            if len(page.summary) > 50:
+            logger.debug(f"Attempt {attempt + 1}: trying page '{title}'")
+            
+            # Fetch the page
+            page = wikipedia.page(title, auto_suggest=False)
+            
+            # Validate summary is substantial
+            if len(page.summary) > 100:
+                logger.info(f"Successfully fetched page: {page.title}")
                 return page
+            else:
+                logger.debug(f"Page summary too short ({len(page.summary)} chars): {title}")
+                
+        except wikipedia.exceptions.DisambiguationError as e:
+            logger.debug(f"Disambiguation page encountered: {title}")
+            
+        except wikipedia.exceptions.PageError as e:
+            logger.debug(f"Page not found or redirect failed: {title}")
+            
         except Exception as e:
-            logger.debug("wikipedia attempt failed: %s", e)
-            time.sleep(0.2)
-    raise RuntimeError("Could not fetch a suitable Wikipedia page.")
+            logger.debug(f"Wikipedia API error on attempt {attempt + 1}: {e}")
+        
+        # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        if attempt < max_attempts - 1:
+            wait_time = 2 ** attempt
+            logger.debug(f"Waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+    
+    # If all attempts fail, raise a clear error
+    raise RuntimeError(
+        f"Could not fetch a suitable Wikipedia page after {max_attempts} attempts. "
+        "Wikipedia API may be unavailable or rate-limited."
+    )
 
 def build_script(title, summary, max_chars=600):
     hooks = [
