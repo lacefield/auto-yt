@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: '0 9 * * *'  # daily at 09:00 UTC
 
+env:
+  # Opt into Node.js 24 for JavaScript actions on the runner now
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   run-robot:
     runs-on: ubuntu-latest
