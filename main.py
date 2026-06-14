@@ -1,111 +1,180 @@
+import os
+import sys
+import time
+import asyncio
+import random
+import logging
+import subprocess
+import textwrap
+from pathlib import Path
+
+import requests
 import wikipedia
 import edge_tts
-import asyncio
-import requests
-import os
-import subprocess
 from PIL import Image, ImageDraw, ImageFont
+
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileAPI
+from googleapiclient.http import MediaFileUpload
 
-# ==========================================
-# PASTE YOUR NOTEPAD KEYS INSIDE THE QUOTES BELOW
-# ==========================================
-AMAZON_ID = "autonomousaff-20"
-CLIENT_ID = "827724330470-cj8bliafer1qhmfcnee4lt29dj6h0nnr.apps.googleusercontent.com"
-CLIENT_SECRET = "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"
-REFRESH_TOKEN = "1//04Tm97nLD0ovICgYIARAAGAQSNwF-L9IraDzGLdBNkqdmf6WtQQFVhxd24MdjwKlbzuJ4MkHzFf0uOWXXR2xDEoxXzt6gFSkb9lk"
-# ==========================================
+# ---------- Config ----------
+WORKDIR = Path.cwd()
+VOICE_FILE = WORKDIR / "voice.mp3"
+VIDEO_FILE = WORKDIR / "final_video.mp4"
+THUMB_FILE = WORKDIR / "thumb.jpg"
+NUM_IMAGES = 5
+SECONDS_PER_IMAGE = 3
+FRAMERATE = 30
+VIDEO_RES = (1280, 720)
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+LOGFILE = WORKDIR / "robot.log"
+# ----------------------------
 
-print("1. Finding a random topic...")
-# Get a random Wikipedia page
-wiki_page = wikipedia.page(wikipedia.random(pages=1))
-topic = wiki_page.title
-summary = wiki_page.summary[:400] # Grab first 400 characters
-script = f"Did you know that {topic}? Here are some crazy facts. {summary} Subscribe for more daily facts!"
-print(f"Topic chosen: {topic}")
-
-print("2. Generating voiceover...")
-async def generate_audio():
-    # Use Microsoft Edge's free, unlimited neural voice
-    communicate = edge_tts.Communicate(script, voice="en-US-ChristopherNeural")
-    await communicate.save("voice.mp3")
-asyncio.run(generate_audio())
-
-print("3. Downloading free public images...")
-# Query Wikimedia Commons (100% free, no API key, no limits)
-search_term = topic.replace(" ", "%20")
-url = f"https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch={search_term}&prop=imageinfo&iiprop=url&iiurlwidth1280&format=json"
-response = requests.get(url).json()
-
-images_found = 0
-if 'query' in response and 'pages' in response['query']:
-    for page_id, page_data in response['query']['pages'].items():
-        if images_found >= 5:
-            break
-        if 'imageinfo' in page_data and len(page_data['imageinfo']) > 0:
-            img_url = page_data['imageinfo'][0]['thumburl']
-            img_data = requests.get(img_url).content
-            with open(f'img{images_found}.jpg', 'wb') as handler:
-                handler.write(img_data)
-            images_found += 1
-
-# Fallback: If Wikimedia doesn't have 5 images, create blank colored images so the code doesn't crash
-while images_found < 5:
-    img = Image.new('RGB', (1280, 720), color = (73, 109, 137))
-    img.save(f'img{images_found}.jpg')
-    images_found += 1
-
-print("4. Creating thumbnail...")
-# Open the first image and draw massive text on it
-img = Image.open('img0.jpg').convert('RGB').resize((1280, 720))
-draw = ImageDraw.Draw(img)
-try:
-    # Try to use a bold font, fallback to default if not found on Linux server
-    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
-except:
-    font = ImageFont.load_default()
-
-# Draw text in the center, yellow with black outline
-draw.text((640, 360), topic.upper(), font=font, fill="yellow", stroke_width=6, stroke_fill="black", anchor="mm")
-img.save("thumb.jpg")
-
-print("5. Editing video with FFmpeg...")
-# Stitch 5 images (3 seconds each = 15 seconds) with the voiceover
-ffmpeg_cmd = [
-    "ffmpeg", "-y",
-    "-loop", "1", "-t", "3", "-i", "img0.jpg",
-    "-loop", "1", "-t", "3", "-i", "img1.jpg",
-    "-loop", "1", "-t", "3", "-i", "img2.jpg",
-    "-loop", "1", "-t", "3", "-i", "img3.jpg",
-    "-loop", "1", "-t", "3", "-i", "img4.jpg",
-    "-i", "voice.mp3",
-    "-filter_complex", "[0:v][1:v][2:v][3:v][4:v]concat=n=5:v=1:a=0,format=yuv420p[v]",
-    "-map", "[v]", "-map", "5:a",
-    "-c:v", "libx264", "-c:a", "aac", "-shortest", "final_video.mp4"
-]
-subprocess.run(ffmpeg_cmd, check=True)
-
-print("6. Uploading to YouTube...")
-# Authenticate using the permanent Refresh Token
-creds = Credentials(
-    token=None,
-    refresh_token=REFRESH_TOKEN
-    token_uri='https://oauth2.googleapis.com/token',
-    client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET,
-    scopes=['https://www.googleapis.com/auth/youtube']
+# ---------- Logging ----------
+logging.basicConfig(
+    filename=str(LOGFILE),
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
 )
-youtube = build('youtube', 'v3', credentials=creds)
+logger = logging.getLogger("auto-yt")
+# ----------------------------
 
-# Upload the video
-video_request = youtube.videos().insert(
-    part="snippet,status",
-    body={
+# ---------- Secrets from env (secure) ----------
+AMAZON_ID = os.environ.get("AMAZON_ID")
+CLIENT_ID = os.environ.get("CLIENT_ID")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
+
+def require_env(name, value):
+    if not value:
+        logger.error("Missing required environment variable: %s", name)
+        raise SystemExit(f"Missing required environment variable: {name}")
+
+require_env("AMAZON_ID", AMAZON_ID)
+require_env("CLIENT_ID", CLIENT_ID)
+require_env("CLIENT_SECRET", CLIENT_SECRET)
+require_env("REFRESH_TOKEN", REFRESH_TOKEN)
+# ----------------------------
+
+# ---------- Helpers ----------
+def safe_wikipedia_page(max_attempts=12):
+    for _ in range(max_attempts):
+        try:
+            title = wikipedia.random(1)
+            page = wikipedia.page(title)
+            if len(page.summary) > 50:
+                return page
+        except Exception as e:
+            logger.debug("wikipedia attempt failed: %s", e)
+            time.sleep(0.2)
+    raise RuntimeError("Could not fetch a suitable Wikipedia page.")
+
+def build_script(title, summary, max_chars=600):
+    hooks = [
+        f"Stop scrolling. {title} is crazier than you think.",
+        f"You've heard of {title}, but not like this.",
+        f"Most people have no idea how wild {title} really is."
+    ]
+    hook = random.choice(hooks)
+    trimmed = summary.replace("\n", " ").strip()
+    if len(trimmed) > max_chars:
+        trimmed = trimmed[:max_chars].rsplit(" ", 1)[0] + "..."
+    cta = "Follow for more daily facts."
+    return f"{hook} {trimmed} {cta}"
+
+async def generate_voice(script_text, out_path):
+    try:
+        communicate = edge_tts.Communicate(script_text, voice="en-US-ChristopherNeural")
+        await communicate.save(str(out_path))
+    except Exception as e:
+        logger.exception("edge_tts failed: %s", e)
+        raise
+
+def fetch_commons_images(topic, max_images=NUM_IMAGES, width=1280):
+    safe_topic = requests.utils.quote(topic)
+    url = (
+        "https://commons.wikimedia.org/w/api.php?"
+        f"action=query&generator=search&gsrnamespace=6&gsrsearch={safe_topic}"
+        "&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=1280&format=json"
+    )
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        logger.warning("Wikimedia query failed: %s", e)
+        data = {}
+
+    images = []
+    pages = data.get("query", {}).get("pages", {})
+    for pid, page in pages.items():
+        if "imageinfo" in page and page["imageinfo"]:
+            info = page["imageinfo"][0]
+            img_url = info.get("thumburl") or info.get("url")
+            if img_url:
+                try:
+                    img_data = requests.get(img_url, timeout=20).content
+                    fname = WORKDIR / f"img{len(images)}.jpg"
+                    with open(fname, "wb") as fh:
+                        fh.write(img_data)
+                    images.append(str(fname))
+                    if len(images) >= max_images:
+                        break
+                except Exception as e:
+                    logger.debug("Failed to download image %s: %s", img_url, e)
+                    continue
+    while len(images) < max_images:
+        fname = WORKDIR / f"img{len(images)}.jpg"
+        img = Image.new("RGB", VIDEO_RES, color=(random.randint(20,200), random.randint(20,200), random.randint(20,200)))
+        img.save(fname)
+        images.append(str(fname))
+    return images
+
+def create_thumbnail(base_image_path, title, out_path=THUMB_FILE, res=VIDEO_RES):
+    img = Image.open(base_image_path).convert("RGB").resize(res)
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype(FONT_PATH, 80)
+    except Exception:
+        font = ImageFont.load_default()
+    wrapped = textwrap.fill(title.upper(), width=18)
+    w, h = draw.multiline_textsize(wrapped, font=font)
+    x = res[0] // 2
+    y = res[1] // 2 - h // 2
+    draw.multiline_text((x, y), wrapped, font=font, fill="yellow", stroke_width=6, stroke_fill="black", anchor="mm", align="center")
+    img.save(out_path)
+
+def build_ffmpeg_cmd(image_files, voice_file, out_file=VIDEO_FILE, seconds_per=SECONDS_PER_IMAGE, framerate=FRAMERATE):
+    cmd = ["ffmpeg", "-y"]
+    for img in image_files:
+        cmd += ["-loop", "1", "-framerate", str(framerate), "-t", str(seconds_per), "-i", img]
+    cmd += ["-i", str(voice_file)]
+    vf_parts = []
+    num_imgs = len(image_files)
+    for i in range(num_imgs):
+        vf_parts.append(f"[{i}:v]scale={VIDEO_RES[0]}:{VIDEO_RES[1]},setsar=1,fps={framerate}[v{i}]")
+    concat_inputs = "".join(f"[v{i}]" for i in range(num_imgs))
+    vf_parts.append(f"{concat_inputs}concat=n={num_imgs}:v=1:a=0,format=yuv420p[vout]")
+    filter_complex = ";".join(vf_parts)
+    cmd += ["-filter_complex", filter_complex, "-map", "[vout]", "-map", f"{num_imgs}:a", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(out_file)]
+    return cmd
+
+def upload_to_youtube(video_path, thumb_path, topic, script):
+    creds = Credentials(
+        token=None,
+        refresh_token=REFRESH_TOKEN,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        scopes=["https://www.googleapis.com/auth/youtube.upload"]
+    )
+    youtube = build("youtube", "v3", credentials=creds)
+    title = f"Crazy Facts About {topic}"
+    description = f"{script}\n\n🔗 Related: https://www.amazon.com/s?k={topic.replace(' ', '+')}&tag={AMAZON_ID}"
+    body = {
         "snippet": {
-            "title": f"Crazy Facts About {topic}",
-            "description": f"Learn about {topic}!\n\n🔗 Check out related items on Amazon: https://www.amazon.com/s?k={topic.replace(' ', '+')}&tag={AMAZON_ID}",
+            "title": title,
+            "description": description,
             "tags": [topic, "facts", "education", "did you know"],
             "categoryId": "28"
         },
@@ -113,13 +182,51 @@ video_request = youtube.videos().insert(
             "privacyStatus": "public",
             "selfDeclaredMadeForKids": False
         }
-    },
-    media_body=MediaFileUpload("final_video.mp4")
-)
-video_response = video_request.execute()
-video_id = video_response['id']
-print(f"Video uploaded! ID: {video_id}")
+    }
+    media = MediaFileUpload(str(video_path), resumable=True)
+    try:
+        req = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+        resp = req.execute()
+        vid = resp.get("id")
+        if thumb_path and os.path.exists(thumb_path):
+            youtube.thumbnails().set(videoId=vid, media_body=MediaFileUpload(str(thumb_path))).execute()
+        return vid
+    except Exception as e:
+        logger.exception("YouTube upload failed: %s", e)
+        raise
 
-# Upload the thumbnail
-youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload("thumb.jpg")).execute()
-print("Thumbnail set! Robot finished successfully.")
+# ---------- Main ----------
+def main():
+    try:
+        logger.info("Starting run")
+        page = safe_wikipedia_page()
+        topic = page.title
+        summary = page.summary[:800]
+        script = build_script(topic, summary)
+        logger.info("Topic chosen: %s", topic)
+
+        logger.info("Generating voiceover")
+        asyncio.run(generate_voice(script, VOICE_FILE))
+
+        logger.info("Fetching images")
+        images = fetch_commons_images(topic)
+
+        logger.info("Creating thumbnail")
+        create_thumbnail(images[0], topic, THUMB_FILE)
+
+        logger.info("Building video with ffmpeg")
+        ff_cmd = build_ffmpeg_cmd(images, VOICE_FILE, VIDEO_FILE)
+        logger.info("Running ffmpeg: %s", " ".join(ff_cmd[:6]) + " ...")
+        subprocess.run(ff_cmd, check=True)
+
+        logger.info("Uploading to YouTube")
+        video_id = upload_to_youtube(VIDEO_FILE, THUMB_FILE, topic, script)
+        logger.info("Upload complete: %s", video_id)
+        print("Video uploaded! ID:", video_id)
+    except Exception as e:
+        logger.exception("Run failed: %s", e)
+        print("Run failed:", e)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
