@@ -1,0 +1,20 @@
+name: Daily Auto Upload
+on:
+  schedule:
+    - cron: '0 9 * * *' # Runs every day at 9:00 AM UTC
+  workflow_dispatch: # Lets you click a button to test it manually
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install FFmpeg (Video Editor)
+        run: sudo apt-get install ffmpeg -y
+      - name: Install Python Tools
+        run: pip install -r requirements.txt
+      - name: Run the Robot
+        run: python main.py
