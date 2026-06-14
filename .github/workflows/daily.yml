@@ -6,12 +6,12 @@ on:
     - cron: '0 9 * * *'  # daily at 09:00 UTC
 
 env:
-  # Opt into Node.js 24 for JavaScript actions on the runner now
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   run-robot:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -39,3 +39,14 @@ jobs:
           REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
         run: |
           python main.py
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-artifacts
+          path: |
+            final_video.mp4
+            thumb.jpg
+            meta.json
+            robot.log
