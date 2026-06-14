@@ -1,6 +1,8 @@
 wikipedia
 edge-tts
 requests
-Pillow
+pillow
 google-api-python-client
-google-auth-oauthlib
+google-auth
+moviepy
+pyttsx3
