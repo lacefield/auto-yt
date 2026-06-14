@@ -1,3 +1,20 @@
+#!/usr/bin/env python3
+"""
+Secure automated uploader for GitHub Actions.
+Reads credentials from environment variables:
+  AMAZON_ID, CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN
+
+Requirements (put in requirements.txt):
+wikipedia
+edge-tts
+requests
+pillow
+google-api-python-client
+google-auth
+moviepy
+pyttsx3
+"""
+
 import os
 import sys
 import time
