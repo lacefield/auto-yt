@@ -1,5 +1,4 @@
-jobs:
-  name: Daily Auto Upload
+name: Daily Auto Upload
 
 on:
   workflow_dispatch:
